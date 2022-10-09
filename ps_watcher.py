@@ -152,6 +152,7 @@ class Proc:
         self.uid = uid
         self.gid = gid
         self.cmd = cmd
+        self.pid_count: int = 0
         self.pid_records: dict[str, SimpleNamespace] = {}
         self.dead_pid_io = SimpleNamespace(r_io=0, w_io=0)
 
@@ -387,6 +388,8 @@ def create_proc(pid: int, clean_up: bool = False, is_nl: bool = False) -> None:
         proc.pid_records[pid_key] = pid_record
         _proc_pid_records[pid_key] = proc
 
+        proc.pid_count += 1
+
 
 def do_clean_up(proc: Proc, dead_pid: DeadPid = None, initial_clean_up: bool = False):
     removed = False
@@ -527,6 +530,8 @@ def handle_dead_pid(dp: DeadPid) -> None:
 
         proc.dead_pid_io.r_io += dp.r_io
         proc.dead_pid_io.w_io += dp.w_io
+
+        proc.pid_count += 1
     elif dp.w_io > 0:
         print_d1(f'Quick killer: '
                  f'{dp.uid}.{dp.gid} '
@@ -570,24 +575,6 @@ def handle_new_pids():
     print('Exiting', threading.current_thread().name)
 
 
-def _print_proc_list(proc_list: Iterable[Proc], full_list: bool = False) -> None:
-    sorted_procs: list[Proc] = \
-        sorted(proc_list, key=lambda pr: pr.get_w_io(), reverse=True)
-    if not full_list:
-        del sorted_procs[10:]
-
-    for p in sorted_procs:
-        print(f'{p.uid} {p.gid} {p.get_r_io(True)} {p.get_w_io(True)} {p.cmd}'[:_COLS])
-
-
-def _print_top_procs() -> None:
-    print('Processes')
-    _print_proc_list(_proc_cmd_records.values())
-    if len(_proc_ppid_records) > 0:
-        print('Quick processes')
-        _print_proc_list(_proc_ppid_records.values())
-
-
 class ClientCmd:
     CMD_GET_PROC_LIST: int = 0
     CMD_GET_QUICK_PROC_LIST: int = 2
@@ -628,7 +615,6 @@ def _quit(*_):
     with _lists_lock:
         if sys.stdout.isatty():
             print('\r', end='')
-            # _print_top_procs()
 
         save_dump()
         print(create_dump_msg())
@@ -682,15 +668,24 @@ def start_server():
 
 
 def start_client() -> None:
+    def print_proc_list(proc_list: Iterable[Proc]) -> None:
+        sorted_procs: list[Proc] = \
+            sorted(proc_list, key=lambda pr: pr.get_w_io(), reverse=True)
+        if not full_proc_list:
+            del sorted_procs[10:]
+
+        for p in sorted_procs:
+            print(f'{p.pid_count} {p.uid}.{p.gid} {p.get_r_io(True)} {p.get_w_io(True)} {p.cmd}'[:_COLS])
+
     client = pynng.Req0(dial=NNG_SOCK_PATH, send_timeout=1000, recv_timeout=2000)
 
     print('Processes\n=========')
     client.send(pickle.dumps(ClientCmd(ClientCmd.CMD_GET_PROC_LIST)))
-    _print_proc_list(pickle.loads(client.recv()), full_proc_list)
+    print_proc_list(pickle.loads(client.recv()))
 
     print('\nQuick Processes\n===============')
     client.send(pickle.dumps(ClientCmd(ClientCmd.CMD_GET_QUICK_PROC_LIST)))
-    _print_proc_list(pickle.loads(client.recv()), full_proc_list)
+    print_proc_list(pickle.loads(client.recv()))
 
     client.close()
 
