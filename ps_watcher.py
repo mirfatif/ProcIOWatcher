@@ -13,6 +13,10 @@ import getopt
 from types import SimpleNamespace
 from typing import Iterator, Iterable
 
+import asyncio
+import sdbus
+from sdbus import DbusInterfaceCommonAsync, dbus_method_async
+
 import native_bind
 from pyroute2.netlink.exceptions import NetlinkError
 from pyroute2.netlink.taskstats import TaskStats
@@ -28,6 +32,9 @@ DUMP_FILE = '/home/irfan/ps_watcher.dump'
 _COLS: int = 10000
 if sys.stdout.isatty():
     _COLS = os.get_terminal_size().columns
+
+DBUS_SVC_NAME = 'com.mirfatif.PsWatcher'
+DBUS_OBJECT_PATH = '/'
 
 DEBUG_LEVEL: int = 0
 
@@ -560,7 +567,7 @@ def handle_new_pids():
     print('Exiting', threading.current_thread().name)
 
 
-def _print_procs_list(proc_list: Iterable[Proc]) -> None:
+def _print_proc_list(proc_list: Iterable[Proc]) -> None:
     sorted_procs: list[Proc] = \
         sorted(proc_list, key=lambda pr: pr.get_w_io(), reverse=True)
     del sorted_procs[10:]
@@ -569,23 +576,28 @@ def _print_procs_list(proc_list: Iterable[Proc]) -> None:
         print(f'{p.uid} {p.gid} {p.get_r_io(True)} {p.get_w_io(True)} {p.cmd}'[:_COLS])
 
 
-def _print_procs() -> None:
+def _print_top_procs() -> None:
     print('Processes')
-    _print_procs_list(_proc_cmd_records.values())
+    _print_proc_list(_proc_cmd_records.values())
     if len(_proc_ppid_records) > 0:
         print('Quick processes')
-        _print_procs_list(_proc_ppid_records.values())
+        _print_proc_list(_proc_ppid_records.values())
 
 
 def _quit(*_):
+    # TODO does not work
+    sdbus.get_default_bus().close()
+    dbus_loop.stop()
+    # dbus_loop.close()
+
     native_bind.stop_proc_events()
     _task_stats.close()
 
-    if sys.stdout.isatty():
-        print('\r', end='')
-
     with _lists_lock:
-        _print_procs()
+        if sys.stdout.isatty():
+            print('\r', end='')
+            _print_top_procs()
+
         save_dump()
         print(create_dump_msg())
 
@@ -603,10 +615,10 @@ def check_caps():
 
 def get_opts():
     try:
-        opts, args = getopt.getopt(sys.argv[1:], '', ['debug='])
+        opts, args = getopt.getopt(sys.argv[1:], '', ['debug=', 'server'])
     except getopt.GetoptError as e:
         print(e)
-        print(f'Usage:\n\t{os.path.basename(sys.argv[0])} [--debug=1|2]')
+        print(f'Usage:\n\t{os.path.basename(sys.argv[0])} [--debug=1|2] [--server]')
         sys.exit(1)
 
     if args:
@@ -621,18 +633,53 @@ def get_opts():
 
             global DEBUG_LEVEL
             DEBUG_LEVEL = int(val)
+        elif opt == '--server':
+            global is_server
+            is_server = True
         else:
             sys.exit(1)  # Should not happen.
 
 
-def start():
-    get_opts()
+class DbusInterface(DbusInterfaceCommonAsync, interface_name='com.mirfatif.PsWatcher'):  # noqa
+    @staticmethod
+    def _get_proc_list(proc_list: Iterable[Proc]) -> list[tuple[int, int, str, str, str]]:
+        lst = []
+
+        for p in sorted(proc_list, key=lambda pr: pr.get_w_io(), reverse=True):
+            lst.append((p.uid, p.gid, p.get_r_io(True), p.get_w_io(True), p.cmd))
+
+        return lst
+
+    @dbus_method_async(result_signature='a(uusss)')
+    async def get_proc_list(self) -> list[tuple[int, int, str, str, str]]:
+        return self._get_proc_list(_proc_cmd_records.values())
+
+    @dbus_method_async(result_signature='a(uusss)')
+    async def get_quick_proc_list(self) -> list[tuple[int, int, str, str, str]]:
+        return self._get_proc_list(_proc_ppid_records.values())
+
+
+def start_server():
     check_caps()
 
     for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM):
         signal.signal(sig, _quit)
 
     load_dumps()
+
+    print('Starting dbus service...')
+
+    async def init_dbus_interface():
+        await sdbus.request_default_bus_name_async(DBUS_SVC_NAME)
+        dbus_server.export_to_dbus(DBUS_OBJECT_PATH)
+
+    dbus_loop.run_until_complete(init_dbus_interface())
+
+    def start_dbus_service():
+        dbus_loop.run_forever()
+        print('Exiting', threading.current_thread().name)
+
+    threading.Thread(target=start_dbus_service, name='DbusService', daemon=False).start()
 
     print('Watching...')
     threading.Thread(target=handle_dead_pids, name='DeadPidHandler', daemon=False).start()
@@ -652,14 +699,40 @@ def start():
             time.sleep(PROCFS_PARSE_DELAY_SECS)
 
 
-_parser: ProcParser = ProcParser()
-_proc_cmd_records: dict[str, Proc] = {}
-_proc_ppid_records: dict[str, Proc] = {}
-_proc_pid_records: dict[str, Proc] = {}
-_procfs_iter_count: int = 0
-_task_stats: PidTaskStats = PidTaskStats()
-_terminated: bool = False
-_lists_lock: threading.Lock = threading.Lock()
+def start_client() -> None:
+    client = DbusInterface.new_proxy(DBUS_SVC_NAME, DBUS_OBJECT_PATH)
+
+    def print_proc_list(proc_list: list[tuple[int, int, str, str, str]]) -> None:
+        del proc_list[10:]
+        for p in proc_list:
+            print(f'{p[0]} {p[1]} {p[2]} {p[3]} {p[4]}'[:_COLS])
+
+    async def get_and_print_procs():
+        print('Processes')
+        print_proc_list(await client.get_proc_list())
+        print('Quick Processes')
+        print_proc_list(await client.get_quick_proc_list())
+
+    asyncio.run(get_and_print_procs())
+
 
 if __name__ == '__main__':
-    start()
+    is_server: bool = False
+    get_opts()
+
+    if is_server:
+        _parser: ProcParser = ProcParser()
+        _proc_cmd_records: dict[str, Proc] = {}
+        _proc_ppid_records: dict[str, Proc] = {}
+        _proc_pid_records: dict[str, Proc] = {}
+        _procfs_iter_count: int = 0
+        _task_stats: PidTaskStats = PidTaskStats()
+        _terminated: bool = False
+        _lists_lock: threading.Lock = threading.Lock()
+
+        dbus_server: DbusInterface = DbusInterface()
+        dbus_loop = asyncio.new_event_loop()
+
+        start_server()
+    else:
+        start_client()
