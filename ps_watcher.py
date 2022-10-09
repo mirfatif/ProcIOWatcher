@@ -13,9 +13,7 @@ import getopt
 from types import SimpleNamespace
 from typing import Iterator, Iterable
 
-import asyncio
-import sdbus
-from sdbus import DbusInterfaceCommonAsync, dbus_method_async
+import pynng
 
 import native_bind
 from pyroute2.netlink.exceptions import NetlinkError
@@ -33,8 +31,7 @@ _COLS: int = 10000
 if sys.stdout.isatty():
     _COLS = os.get_terminal_size().columns
 
-DBUS_SVC_NAME = 'com.mirfatif.PsWatcher'
-DBUS_OBJECT_PATH = '/'
+NNG_SOCK_PATH = 'ipc:///tmp/ps_watcher.sock'
 
 DEBUG_LEVEL: int = 0
 
@@ -243,6 +240,10 @@ class PidTaskStats:
         cmd, r_io, w_io = s['ac_comm'], s['read_bytes'], s['write_bytes']
         # start_time: int = int((s['ac_btime'] - UPTIME_EPOCH_SECS))
 
+        if pid <= 0:
+            print_d1(f'Bsd PID: uid: {uid}, gid: {gid}, cmd: [{cmd}]')
+            return None
+
         if not _pid and not ppid:
             print_d1(f'PPID and PID are zero: uid: {uid}, gid: {gid}, cmd: [{cmd}]')
         elif not _pid:
@@ -257,11 +258,13 @@ class PidTaskStats:
             print_d1(f'    AGGR_PID: [{_parser.get_cmd(pid)}]')
             print_d1(f'    AC_PID: [{_parser.get_cmd(_pid)}]')
 
-        assert pid > 0
-
         if sent_pid:
-            assert pid == sent_pid
-            return r_io, w_io
+            if pid != sent_pid:
+                print_d1(f'Sent ({sent_pid}) and received (AGGR_PID: {pid}) PIDs '
+                         f'are different: uid: {uid}, gid: {gid}, cmd: [{cmd}]')
+                return None
+            else:
+                return r_io, w_io
         else:
             return DeadPid(
                 pid_key=create_pid_record_key(pid, uid, gid),
@@ -567,10 +570,11 @@ def handle_new_pids():
     print('Exiting', threading.current_thread().name)
 
 
-def _print_proc_list(proc_list: Iterable[Proc]) -> None:
+def _print_proc_list(proc_list: Iterable[Proc], full_list: bool = False) -> None:
     sorted_procs: list[Proc] = \
         sorted(proc_list, key=lambda pr: pr.get_w_io(), reverse=True)
-    del sorted_procs[10:]
+    if not full_list:
+        del sorted_procs[10:]
 
     for p in sorted_procs:
         print(f'{p.uid} {p.gid} {p.get_r_io(True)} {p.get_w_io(True)} {p.cmd}'[:_COLS])
@@ -584,22 +588,55 @@ def _print_top_procs() -> None:
         _print_proc_list(_proc_ppid_records.values())
 
 
+class ClientCmd:
+    CMD_GET_PROC_LIST: int = 0
+    CMD_GET_QUICK_PROC_LIST: int = 2
+
+    def __init__(self, cmd: int):
+        self.cmd: int = cmd
+
+
+def start_nng_server():
+    while not _terminated:
+        try:
+            msg: pynng.Message = nng_server.recv_msg()
+        except pynng.exceptions.Closed as e:
+            print(f'Exiting {threading.current_thread().name}:', e)
+            return
+
+        try:
+            cmd: ClientCmd = pickle.loads(msg.bytes)
+        except pickle.UnpicklingError as e:
+            print('Bad command received from client:', e)
+            continue
+
+        if not isinstance(cmd, ClientCmd):
+            print(f'Bad command type "{type(cmd)}"')
+            continue
+
+        if cmd.cmd == ClientCmd.CMD_GET_PROC_LIST:
+            msg.pipe.send(pickle.dumps(list(_proc_cmd_records.values())))
+        elif cmd.cmd == ClientCmd.CMD_GET_QUICK_PROC_LIST:
+            msg.pipe.send(pickle.dumps(list(_proc_ppid_records.values())))
+        else:
+            print(f'Bad command received from client: {cmd.cmd}')
+
+    print('Exiting', threading.current_thread().name)
+
+
 def _quit(*_):
-    # TODO does not work
-    sdbus.get_default_bus().close()
-    dbus_loop.stop()
-    # dbus_loop.close()
-
-    native_bind.stop_proc_events()
-    _task_stats.close()
-
     with _lists_lock:
         if sys.stdout.isatty():
             print('\r', end='')
-            _print_top_procs()
+            # _print_top_procs()
 
         save_dump()
         print(create_dump_msg())
+
+    nng_server.close()
+
+    native_bind.stop_proc_events()
+    _task_stats.close()
 
     global _terminated
     _terminated = True
@@ -613,12 +650,57 @@ def check_caps():
         print('cap_net_admin is required for netlink socket', file=sys.stderr)
 
 
+def start_server():
+    check_caps()
+
+    for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM):
+        signal.signal(sig, _quit)
+
+    load_dumps()
+
+    print('Starting NNG server...')
+    threading.Thread(target=start_nng_server, name='NngServer', daemon=False).start()
+
+    threading.Thread(target=handle_new_pids, name='NewPidHandler', daemon=False).start()
+
+    print('Starting dead PID handler...')
+    threading.Thread(target=handle_dead_pids, name='DeadPidHandler', daemon=False).start()
+
+    print('Watching procfs...')
+    while True:
+        if _terminated:
+            print('Exiting', threading.current_thread().name)
+            break
+
+        try:
+            parse_procfs_locked()
+        except PidTaskStats.TaskStatsSocketClosed as e:
+            print(f'Exiting {threading.current_thread().name}.', e)
+            break
+        else:
+            time.sleep(PROCFS_PARSE_DELAY_SECS)
+
+
+def start_client() -> None:
+    client = pynng.Req0(dial=NNG_SOCK_PATH, send_timeout=1000, recv_timeout=2000)
+
+    print('Processes\n=========')
+    client.send(pickle.dumps(ClientCmd(ClientCmd.CMD_GET_PROC_LIST)))
+    _print_proc_list(pickle.loads(client.recv()), full_proc_list)
+
+    print('\nQuick Processes\n===============')
+    client.send(pickle.dumps(ClientCmd(ClientCmd.CMD_GET_QUICK_PROC_LIST)))
+    _print_proc_list(pickle.loads(client.recv()), full_proc_list)
+
+    client.close()
+
+
 def get_opts():
     try:
-        opts, args = getopt.getopt(sys.argv[1:], '', ['debug=', 'server'])
+        opts, args = getopt.getopt(sys.argv[1:], '', ['debug=', 'server', 'full'])
     except getopt.GetoptError as e:
         print(e)
-        print(f'Usage:\n\t{os.path.basename(sys.argv[0])} [--debug=1|2] [--server]')
+        print(f'Usage:\n\t{os.path.basename(sys.argv[0])} [--debug=1|2] [--server] [--full]')
         sys.exit(1)
 
     if args:
@@ -636,91 +718,23 @@ def get_opts():
         elif opt == '--server':
             global is_server
             is_server = True
+        elif opt == '--full':
+            global full_proc_list
+            full_proc_list = True
         else:
             sys.exit(1)  # Should not happen.
 
 
-class DbusInterface(DbusInterfaceCommonAsync, interface_name='com.mirfatif.PsWatcher'):  # noqa
-    @staticmethod
-    def _get_proc_list(proc_list: Iterable[Proc]) -> list[tuple[int, int, str, str, str]]:
-        lst = []
-
-        for p in sorted(proc_list, key=lambda pr: pr.get_w_io(), reverse=True):
-            lst.append((p.uid, p.gid, p.get_r_io(True), p.get_w_io(True), p.cmd))
-
-        return lst
-
-    @dbus_method_async(result_signature='a(uusss)')
-    async def get_proc_list(self) -> list[tuple[int, int, str, str, str]]:
-        return self._get_proc_list(_proc_cmd_records.values())
-
-    @dbus_method_async(result_signature='a(uusss)')
-    async def get_quick_proc_list(self) -> list[tuple[int, int, str, str, str]]:
-        return self._get_proc_list(_proc_ppid_records.values())
-
-
-def start_server():
-    check_caps()
-
-    for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM):
-        signal.signal(sig, _quit)
-
-    load_dumps()
-
-    print('Starting dbus service...')
-
-    async def init_dbus_interface():
-        await sdbus.request_default_bus_name_async(DBUS_SVC_NAME)
-        dbus_server.export_to_dbus(DBUS_OBJECT_PATH)
-
-    dbus_loop.run_until_complete(init_dbus_interface())
-
-    def start_dbus_service():
-        dbus_loop.run_forever()
-        print('Exiting', threading.current_thread().name)
-
-    threading.Thread(target=start_dbus_service, name='DbusService', daemon=False).start()
-
-    print('Watching...')
-    threading.Thread(target=handle_dead_pids, name='DeadPidHandler', daemon=False).start()
-    threading.Thread(target=handle_new_pids, name='NewPidHandler', daemon=False).start()
-
-    while True:
-        if _terminated:
-            print('Exiting', threading.current_thread().name)
-            break
-
-        try:
-            parse_procfs_locked()
-        except PidTaskStats.TaskStatsSocketClosed as e:
-            print(f'Exiting {threading.current_thread().name}.', e)
-            break
-        else:
-            time.sleep(PROCFS_PARSE_DELAY_SECS)
-
-
-def start_client() -> None:
-    client = DbusInterface.new_proxy(DBUS_SVC_NAME, DBUS_OBJECT_PATH)
-
-    def print_proc_list(proc_list: list[tuple[int, int, str, str, str]]) -> None:
-        del proc_list[10:]
-        for p in proc_list:
-            print(f'{p[0]} {p[1]} {p[2]} {p[3]} {p[4]}'[:_COLS])
-
-    async def get_and_print_procs():
-        print('Processes')
-        print_proc_list(await client.get_proc_list())
-        print('Quick Processes')
-        print_proc_list(await client.get_quick_proc_list())
-
-    asyncio.run(get_and_print_procs())
-
-
 if __name__ == '__main__':
     is_server: bool = False
+    full_proc_list: bool = False
     get_opts()
 
     if is_server:
+        if full_proc_list:
+            print('--full option is for client only')
+            sys.exit(1)
+
         _parser: ProcParser = ProcParser()
         _proc_cmd_records: dict[str, Proc] = {}
         _proc_ppid_records: dict[str, Proc] = {}
@@ -730,8 +744,7 @@ if __name__ == '__main__':
         _terminated: bool = False
         _lists_lock: threading.Lock = threading.Lock()
 
-        dbus_server: DbusInterface = DbusInterface()
-        dbus_loop = asyncio.new_event_loop()
+        nng_server = pynng.Rep0(listen=NNG_SOCK_PATH, send_timeout=2000)
 
         start_server()
     else:
