@@ -602,11 +602,16 @@ def start_nng_server():
             continue
 
         if cmd.cmd == ClientCmd.CMD_GET_PROC_LIST:
-            msg.pipe.send(pickle.dumps(list(_proc_cmd_records.values())))
+            with _lists_lock:
+                lst = list(_proc_cmd_records.values())
+            msg.pipe.send(pickle.dumps(lst))
         elif cmd.cmd == ClientCmd.CMD_GET_QUICK_PROC_LIST:
-            msg.pipe.send(pickle.dumps(list(_proc_ppid_records.values())))
+            with _lists_lock:
+                lst = list(_proc_ppid_records.values())
+            msg.pipe.send(pickle.dumps(lst))
         else:
             print(f'Bad command received from client: {cmd.cmd}')
+            continue
 
     print('Exiting', threading.current_thread().name)
 
@@ -644,8 +649,8 @@ def start_server():
 
     load_dumps()
 
-    print('Starting NNG server...')
-    threading.Thread(target=start_nng_server, name='NngServer', daemon=False).start()
+    print('Starting command server...')
+    threading.Thread(target=start_nng_server, name='NNGServer', daemon=False).start()
 
     threading.Thread(target=handle_new_pids, name='NewPidHandler', daemon=False).start()
 
