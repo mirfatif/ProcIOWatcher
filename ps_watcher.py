@@ -46,6 +46,10 @@ def print_d2(msg: str):
         print(msg[:_COLS])
 
 
+def print_exception(ex: Exception):
+    print(ex, file=sys.stderr)
+
+
 def print_err(msg: str, truncate: bool = False):
     if truncate:
         print(msg[:_COLS], file=sys.stderr)
@@ -334,7 +338,7 @@ def create_proc(pid: int, clean_up: bool = False, is_nl: bool = False) -> None:
         return
 
     if any(var is None for var in (ppid, uid, gid, uid_str, gid_str, groups)):
-        print('Failed to read status of PID', pid, file=sys.stderr)
+        print_err(f'Failed to read status of PID {pid}')
         return
 
     if not (cmd := _parser.get_cmd(pid)):
@@ -349,7 +353,7 @@ def create_proc(pid: int, clean_up: bool = False, is_nl: bool = False) -> None:
     r_io, w_io = io
 
     if None in (r_io, w_io):
-        print('Failed to read io for PID', pid, file=sys.stderr)
+        print_err(f'Failed to read io for PID {pid}')
         return
 
     proc_key = uid_str + '|' + gid_str + '|' + groups + '|' + cmd
@@ -605,11 +609,11 @@ def start_nng_server():
         try:
             cmd: ClientCmd = pickle.loads(msg.bytes)
         except pickle.UnpicklingError as e:
-            print('Bad command received from client:', e)
+            print_err(f'Bad command received from client: {e}')
             continue
 
         if not isinstance(cmd, ClientCmd):
-            print(f'Bad command type "{type(cmd)}"')
+            print_err(f'Bad command type "{type(cmd)}"')
             continue
 
         if cmd.cmd == ClientCmd.CMD_GET_PROC_LIST:
@@ -621,7 +625,7 @@ def start_nng_server():
                 lst = list(_proc_ppid_records.values())
             msg.pipe.send(pickle.dumps(lst))
         else:
-            print(f'Bad command received from client: {cmd.cmd}')
+            print_err(f'Bad command received from client: {cmd.cmd}')
             continue
 
     print('Exiting', threading.current_thread().name)
@@ -644,12 +648,16 @@ def _quit(*_):
     _terminated = True
 
 
+def to_str(lst: list):
+    return " ".join(str(s) for s in lst)
+
+
 def check_caps():
     # include <linux/capability.h>
     cap_net_admin = 1 << 12
 
     if _parser.get_eff_caps() & cap_net_admin == 0:
-        print('cap_net_admin is required for netlink socket', file=sys.stderr)
+        print_err('cap_net_admin is required for netlink socket')
 
 
 def start_server():
@@ -710,18 +718,18 @@ def get_opts():
     try:
         opts, args = getopt.getopt(sys.argv[1:], '', ['debug=', 'server', 'full'])
     except getopt.GetoptError as e:
-        print(e)
-        print(f'Usage:\n\t{os.path.basename(sys.argv[0])} [--debug=1|2] [--server] [--full]')
+        print_exception(e)
+        print_err(f'Usage:\n\t{os.path.basename(sys.argv[0])} [--debug=1|2] [--server] [--full]')
         sys.exit(1)
 
     if args:
-        print('Unexpected arguments:', *args)
+        print_err(f'Unexpected arguments: {to_str(*args)}')
         sys.exit(1)
 
     for opt, val in opts:
         if opt == '--debug':
             if not val.isdecimal():
-                print(f'{val} is not an integer')
+                print_err(f'{val} is not an integer')
                 sys.exit(1)
 
             global DEBUG_LEVEL
@@ -743,7 +751,7 @@ if __name__ == '__main__':
 
     if is_server:
         if full_proc_list:
-            print('--full option is for client only')
+            print_err('--full option is for client only')
             sys.exit(1)
 
         _parser: ProcParser = ProcParser()
