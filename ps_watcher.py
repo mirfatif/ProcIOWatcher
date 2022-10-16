@@ -648,8 +648,8 @@ def _quit(*_):
     _terminated = True
 
 
-def to_str(lst: list):
-    return " ".join(str(s) for s in lst)
+def to_str(lst: list, joiner: str = ' '):
+    return joiner.join(str(s) for s in lst)
 
 
 def check_caps():
@@ -658,11 +658,11 @@ def check_caps():
 
     if _parser.get_eff_caps() & cap_net_admin == 0:
         print_err('cap_net_admin is required for netlink socket')
+        os.system(f'priv_exec --caps=net_admin -- {to_str(sys.argv)}')
+        sys.exit()
 
 
 def start_server():
-    check_caps()
-
     for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM):
         signal.signal(sig, _quit)
 
@@ -726,6 +726,8 @@ def get_opts():
         print_err(f'Unexpected arguments: {to_str(*args)}')
         sys.exit(1)
 
+    global is_server, full_proc_list
+
     for opt, val in opts:
         if opt == '--debug':
             if not val.isdecimal():
@@ -735,10 +737,12 @@ def get_opts():
             global DEBUG_LEVEL
             DEBUG_LEVEL = int(val)
         elif opt == '--server':
-            global is_server
             is_server = True
         elif opt == '--full':
-            global full_proc_list
+            if is_server:
+                print_err('--full option is for client only')
+                sys.exit(1)
+
             full_proc_list = True
         else:
             sys.exit(1)  # Should not happen.
@@ -750,11 +754,10 @@ if __name__ == '__main__':
     get_opts()
 
     if is_server:
-        if full_proc_list:
-            print_err('--full option is for client only')
-            sys.exit(1)
-
         _parser: ProcParser = ProcParser()
+        
+        check_caps()
+
         _proc_cmd_records: dict[str, Proc] = {}
         _proc_ppid_records: dict[str, Proc] = {}
         _proc_pid_records: dict[str, Proc] = {}
