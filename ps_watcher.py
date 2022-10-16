@@ -46,6 +46,13 @@ def print_d2(msg: str):
         print(msg[:_COLS])
 
 
+def print_err(msg: str, truncate: bool = False):
+    if truncate:
+        print(msg[:_COLS], file=sys.stderr)
+    else:
+        print(msg, file=sys.stderr)
+
+
 class ProcParser:
     def __init__(self):
         self._dir = '/proc'
@@ -236,6 +243,10 @@ class PidTaskStats:
         # Sometimes s['ac_pid'] and s['ac_ppid'] are 0
         pid = msg.get_nested('TASKSTATS_TYPE_AGGR_PID', 'TASKSTATS_TYPE_PID')
         s = msg.get_nested('TASKSTATS_TYPE_AGGR_PID', 'TASKSTATS_TYPE_STATS')
+
+        if not s:
+            print_err(f'Failed to get stats from message:\n{msg}')
+            return None
 
         _pid, ppid, uid, gid = s['ac_pid'], s['ac_ppid'], s['ac_uid'], s['ac_gid']
         cmd, r_io, w_io = s['ac_comm'], s['read_bytes'], s['write_bytes']
