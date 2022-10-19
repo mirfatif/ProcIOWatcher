@@ -17,6 +17,56 @@
 #include <unistd.h>
 #include <poll.h>
 
+//////////////////////////////////////////////////////////////////////////////
+
+#define TAG "proc_event_conn"
+
+static int print_error(bool with_code, char *format, va_list args)
+{
+    fprintf(stderr, "%s: ", TAG);
+    vfprintf(stderr, format, args);
+
+    if (with_code)
+        fprintf(stderr, ": %s", strerror(errno));
+
+    fprintf(stderr, "\n");
+    fflush(stderr);
+    return EXIT_FAILURE;
+}
+
+static int print_err(char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    print_error(false, format, args);
+    va_end(args);
+    return EXIT_FAILURE;
+}
+
+static int print_err_code(char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    print_error(true, format, args);
+    va_end(args);
+    return EXIT_FAILURE;
+}
+
+static void print_out(char *format, ...)
+{
+    printf("%s: ", TAG);
+
+    va_list args;
+    va_start(args, format);
+    vprintf(format, args);
+    va_end(args);
+
+    printf("\n");
+    fflush(stdout);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+
 // Why use volatile: https://stackoverflow.com/q/246127/9165920
 static volatile bool terminate = false;
 
@@ -29,7 +79,7 @@ static int nl_connect()
     nl_sock = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_CONNECTOR);
     if (nl_sock == -1)
     {
-        perror("Failed to create socket");
+        print_err_code("Failed to create socket");
         return -1;
     }
 
@@ -39,7 +89,7 @@ static int nl_connect()
     rc = bind(nl_sock, (struct sockaddr *)&sa_nl, sizeof(sa_nl));
     if (rc == -1)
     {
-        perror("Failed to bind to socket");
+        print_err_code("Failed to bind to socket");
         close(nl_sock);
         return -1;
     }
@@ -72,7 +122,7 @@ static int set_proc_ev_listen(int nl_sock, bool enable)
 
     if (send(nl_sock, &nlcn_msg, sizeof(nlcn_msg), 0) == -1)
     {
-        perror("Failed to send msg");
+        print_err_code("Failed to send msg");
         return -1;
     }
 
@@ -112,14 +162,14 @@ static int handle_proc_ev(int nl_sock, void (*cb)(int))
                 continue;
             else
             {
-                perror("Netlink poll failed");
+                print_err_code("Netlink poll failed");
                 return -1;
             }
         }
 
         if ((pfd.revents & POLLERR) != 0 || (pfd.revents & POLLNVAL) != 0)
         {
-            fprintf(stderr, "Netlink poll failed");
+            print_err("Netlink poll failed");
             return -1;
         }
 
@@ -138,7 +188,7 @@ static int handle_proc_ev(int nl_sock, void (*cb)(int))
 
         if (rc == -1)
         {
-            perror("Netlink recv failed");
+            print_err_code("Netlink recv failed");
             return -1;
         }
 
@@ -151,7 +201,7 @@ static int handle_proc_ev(int nl_sock, void (*cb)(int))
         switch (ev.what)
         {
         case PROC_EVENT_NONE:
-            printf("Listening to proc event multicast...\n");
+            print_out("Listening to proc event multicast...");
             break;
         case PROC_EVENT_FORK:
             if (!cb)
@@ -221,7 +271,7 @@ static int set_sigaction(int sig)
     struct sigaction act;
     if (sigaction(sig, NULL, &act))
     {
-        perror("Failed to get sigaction");
+        print_err_code("Failed to get sigaction");
         return -1;
     }
 
@@ -230,7 +280,7 @@ static int set_sigaction(int sig)
 
     if (sigaction(sig, &act, NULL))
     {
-        perror("Failed to set sigaction");
+        print_err_code("Failed to set sigaction");
         return -1;
     }
 
@@ -266,7 +316,7 @@ int main(void)
     {
         // if (signal(sigs[i], &do_terminate) == SIG_ERR)
         // {
-        //     perror("Failed to set signal action");
+        //    print_err_code("Failed to set signal action");
         //     return EXIT_FAILURE;
         // }
 
