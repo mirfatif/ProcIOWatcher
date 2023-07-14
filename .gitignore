@@ -1,2 +1,3 @@
-native_bind.so
-.idea
+/proc_events.so
+/task_stats.so
+/.idea
