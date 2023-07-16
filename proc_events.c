@@ -199,7 +199,23 @@ static int handle_proc_events(int nl_sock, void (*cb)(int, int))
         }
 
         if ((pfd.revents & POLLERR) != 0 || (pfd.revents & POLLNVAL) != 0)
-            return print_err("Netlink poll failed");
+        {
+            int err = 0;
+            socklen_t len = sizeof(err);
+            getsockopt(pfd.fd, SOL_SOCKET, SO_ERROR, (void *)&err, &len);
+
+            if (err)
+                print_err("Netlink poll failed: %s", strerror(err));
+            else
+                print_err("Netlink poll failed");
+
+            if (err == ENOBUFS)
+                // No sure if there is data to read with recv() or not.
+                // https://stackoverflow.com/q/45846900/9165920
+                continue;
+            else
+                return 1;
+        }
 
         // Should not happen.
         if ((pfd.revents & POLLIN) == 0)

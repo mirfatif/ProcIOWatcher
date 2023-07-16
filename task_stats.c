@@ -226,7 +226,6 @@ static int get_family_id(int nl_sd)
 
 struct ts_reader
 {
-	int nl_sd;
 	struct pollfd pfd;
 
 	struct msgtemplate msg;
@@ -274,7 +273,20 @@ static int get_task_stats(struct ts_reader *r, void (*cb)(struct tid_stats))
 	}
 
 	if ((r->pfd.revents & POLLERR) != 0 || (r->pfd.revents & POLLNVAL) != 0)
-		return print_err("Netlink poll failed");
+	{
+		int err = 0;
+		socklen_t len = sizeof(err);
+		getsockopt(r->pfd.fd, SOL_SOCKET, SO_ERROR, (void *)&err, &len);
+
+		if (err)
+			print_err("Netlink poll failed: %s", strerror(err));
+		else
+			return print_err("Netlink poll failed");
+
+		// No sure if there is data to read with recv() or not.
+		// https://stackoverflow.com/q/45846900/9165920
+		return err == ENOBUFS ? EXIT_SUCCESS : EXIT_FAILURE;
+	}
 
 	// Should not happen.
 	if ((r->pfd.revents & POLLIN) == 0)
@@ -284,7 +296,7 @@ static int get_task_stats(struct ts_reader *r, void (*cb)(struct tid_stats))
 	if (stopped)
 		return EXIT_SUCCESS;
 
-	rep_len = recv(r->nl_sd, &msg, sizeof(msg), 0);
+	rep_len = recv(r->pfd.fd, &msg, sizeof(msg), 0);
 
 	if (rep_len < 0)
 	{
@@ -415,7 +427,7 @@ static int start_task_stats(void (*cb)(struct tid_stats))
 	print_out("Listening to exit task stats...");
 
 	rc = EXIT_SUCCESS;
-	struct ts_reader r = {.nl_sd = nl_sd, .pfd = {.fd = nl_sd, .events = POLLIN}};
+	struct ts_reader r = {.pfd = {.fd = nl_sd, .events = POLLIN}};
 
 	while (!stopped)
 	{
@@ -444,7 +456,7 @@ static int get_tid_stats(pid_t tid, void (*cb)(struct tid_stats))
 	if (send_cmd(nl_sock_fd, family_id, TASKSTATS_CMD_GET, TASKSTATS_CMD_ATTR_PID, &tid, sizeof(pid_t)))
 		return EXIT_FAILURE;
 
-	struct ts_reader r = {.nl_sd = nl_sock_fd, .pfd = {.fd = nl_sock_fd, .events = POLLIN}};
+	struct ts_reader r = {.pfd = {.fd = nl_sock_fd, .events = POLLIN}};
 
 	if (get_task_stats(&r, cb))
 		return EXIT_FAILURE;
