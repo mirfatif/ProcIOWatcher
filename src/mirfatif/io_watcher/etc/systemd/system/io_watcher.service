@@ -5,7 +5,9 @@ StartLimitIntervalSec=1d
 StartLimitBurst=5
 
 [Service]
-ExecStart=/PATH/TO/io_watcher.py --server
+# Do not use 'python3 -m mirfatif.io_watcher.io_watcher'.
+# 'isinstance' of classes will fail between client and server.
+ExecStart=/opt/python_user_base/bin/io_watcher.py --server
 
 AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE
@@ -20,7 +22,7 @@ TimeoutStopSec=30
 User=nobody
 Group=nogroup
 
-#Environment=PYTHONUSERBASE=/PATH/TO/python_user_base
+Environment=PYTHONUSERBASE=/opt/python_user_base
 
 [Install]
 WantedBy=multi-user.target

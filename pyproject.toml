@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "setuptools_scm[toml]>=6.2", "Cython~=3.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "io_watcher"
+authors = [
+    { name = "Irfan Latif", email = "mirfatif.dev@gmail.com" },
+]
+description = "Find out which processes have the highest disk I/O."
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Operating System :: POSIX :: Linux",
+]
+requires-python = ">=3.10"
+dynamic = ["version", "dependencies"]
+
+[project.urls]
+"Homepage" = "https://github.com/mirfatif/ProcIOWatcher"
+"Bug Tracker" = "https://github.com/mirfatif/ProcIOWatcher/issues"
+
+[project.scripts]
+"io_watcher.py" = "mirfatif.io_watcher.io_watcher:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"mirfatif.io_watcher.etc.systemd.system" = ["io_watcher.service"]
+
+# For dynamic version from git tag.
+[tool.setuptools_scm]
+
+# [project.dependencies] is a better way. But PyCharm 
+# shows warning if requirements.txt is not found.
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }

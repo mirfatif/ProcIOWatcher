@@ -78,7 +78,7 @@ static void print_out(char *format, ...)
 static int set_sig_actions(void (*handler)(int))
 {
 	int sigs[] = {SIGHUP, SIGINT, SIGQUIT, SIGTERM};
-	for (int i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++)
+	for (unsigned int i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++)
 	{
 		struct sigaction act;
 		if (sigaction(sigs[i], NULL, &act))

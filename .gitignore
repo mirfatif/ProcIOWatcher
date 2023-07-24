@@ -1,3 +1,5 @@
-/proc_events.so
-/task_stats.so
-/.idea
+/.idea/
+/native/*-bind.c
+/src/*.egg-info/
+/dist/
+/build/
